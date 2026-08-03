@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vydra_blue">#FF1E88E5</color>
+    <color name="vydra_blue_light">#FF6AB7FF</color>
+    <color name="vydra_blue_dark">#FF005BBB</color>
+    <color name="vydra_teal">#FF00BFA5</color>
+    <color name="vydra_purple">#FF7C4DFF</color>
+    <color name="surface_dark">#FF121212</color>
+    <color name="surface_light">#FFFAFAFA</color>
+    <color name="surface_amoled">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF000000</color>
+</resources>
