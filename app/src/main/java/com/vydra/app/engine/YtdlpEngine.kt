@@ -1,10 +1,12 @@
 package com.vydra.app.engine
 
 import android.content.Context
-import android.os.Build
 import android.util.Log
 import com.vydra.app.domain.model.FormatOption
 import com.vydra.app.domain.model.MediaInfo
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
+import com.yausername.youtubedl_android.YoutubeDLResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,169 +19,72 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 
 class YtdlpEngine(private val context: Context) {
 
+    companion object {
+        private const val TAG = "YtdlpEngine"
+        private const val PROCESS_ID_PREFIX = "vydra_"
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
     private val updateMutex = Mutex()
-
-    private val binDir: File by lazy {
-        File(context.filesDir, "bin").also {
-            if (!it.exists()) it.mkdirs()
-        }
-    }
-
-    private val ytdlpFile: File by lazy {
-        File(binDir, "yt-dlp")
-    }
+    private val activeDownloads = ConcurrentHashMap<String, String>()
+    private var processCounter = 0
 
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
 
-    private var cachedReady = false
+    private var initialized = false
+    private var initError: String? = null
 
-    val isReady: Boolean get() {
-        if (cachedReady && ytdlpFile.exists() && ytdlpFile.length() > 100_000) return true
-        val ready = testBinaryExecution()
-        cachedReady = ready
-        return ready
-    }
+    val isReady: Boolean get() = initialized && initError == null
 
-    private fun testBinaryExecution(): Boolean {
-        if (!ytdlpFile.exists()) return false
-        if (ytdlpFile.length() < 100_000) return false
-
+    fun initLibrary() {
+        if (initialized) return
         try {
-            ytdlpFile.setExecutable(true, false)
-        } catch (_: Exception) {}
-
-        try {
-            val p = Runtime.getRuntime().exec(arrayOf("chmod", "755", ytdlpFile.absolutePath))
-            p.waitFor(3, TimeUnit.SECONDS)
-        } catch (_: Exception) {}
-
-        return try {
-            val process = ProcessBuilder(listOf(ytdlpFile.absolutePath, "--version"))
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            val completed = process.waitFor(10, TimeUnit.SECONDS)
-            val exitCode = if (completed) process.exitValue() else -1
-            Log.i("YtdlpEngine", "Binary test: exit=$exitCode output=$output")
-            completed && exitCode == 0 && output.isNotEmpty()
+            Log.i(TAG, "Initializing youtubedl-android library...")
+            YoutubeDL.getInstance().init(context)
+            initialized = true
+            initError = null
+            Log.i(TAG, "youtubedl-android initialized successfully")
         } catch (e: Exception) {
-            Log.e("YtdlpEngine", "Binary execution test failed: ${e.message}")
-            false
+            Log.e(TAG, "Failed to initialize youtubedl-android", e)
+            initError = e.message
+            initialized = false
         }
     }
 
-    fun getBinaryPath(): String? {
-        return if (isReady) ytdlpFile.absolutePath else null
-    }
-
-    private fun getArchitecture(): String {
-        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: ""
-        return when {
-            abi.contains("arm64") || abi.contains("aarch64") -> "aarch64"
-            abi.contains("arm") -> "armv7l"
-            abi.contains("x86_64") -> "x86_64"
-            abi.contains("x86") -> "x86"
-            else -> "aarch64"
-        }
-    }
-
-    private fun getDownloadUrl(): String {
-        val arch = getArchitecture()
-        return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_$arch"
+    fun ensureBinaryReady(): Boolean {
+        if (!initialized) initLibrary()
+        return isReady
     }
 
     suspend fun ensureBinary(): Result<String> = withContext(Dispatchers.IO) {
-        val path = getBinaryPath()
-        if (path != null) return@withContext Result.success(path)
-        updateBinary()
+        if (!initialized) initLibrary()
+        if (!isReady) {
+            return@withContext Result.failure(
+                Exception("yt-dlp engine failed to initialize: $initError")
+            )
+        }
+        Result.success("ready")
     }
 
     suspend fun updateBinary(): Result<String> = withContext(Dispatchers.IO) {
         updateMutex.withLock {
             try {
                 _updateState.value = UpdateState.Downloading(0)
+                Log.i(TAG, "Updating yt-dlp via library...")
 
-                val url = getDownloadUrl()
-                Log.i("YtdlpEngine", "Downloading yt-dlp from: $url (arch: ${getArchitecture()})")
+                YoutubeDL.getInstance().updateYoutubeDL(context)
+                val version = YoutubeDL.version(context) ?: "unknown"
+                Log.i(TAG, "yt-dlp updated to: $version")
 
-                val connection = URL(url).openConnection() as HttpURLConnection
-                connection.connectTimeout = 30_000
-                connection.readTimeout = 60_000
-                connection.setRequestProperty("User-Agent", "Vydra/1.0")
-                connection.connect()
-
-                if (connection.responseCode != 200) {
-                    val msg = "HTTP ${connection.responseCode} from $url"
-                    _updateState.value = UpdateState.Error(msg)
-                    return@withContext Result.failure(Exception(msg))
-                }
-
-                val totalSize = connection.contentLength.toLong()
-                var downloaded = 0L
-
-                val tempFile = File(binDir, "yt-dlp.tmp")
-                if (tempFile.exists()) tempFile.delete()
-
-                connection.inputStream.use { input ->
-                    FileOutputStream(tempFile).use { output ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead: Int
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            downloaded += bytesRead
-                            val progress = if (totalSize > 0) (downloaded * 100 / totalSize).toInt() else 0
-                            _updateState.value = UpdateState.Downloading(progress)
-                        }
-                    }
-                }
-                connection.disconnect()
-
-                if (tempFile.length() < 100_000) {
-                    tempFile.delete()
-                    val msg = "Downloaded file too small (${tempFile.length()} bytes). May not be a valid binary."
-                    _updateState.value = UpdateState.Error(msg)
-                    return@withContext Result.failure(Exception(msg))
-                }
-
-                if (ytdlpFile.exists()) ytdlpFile.delete()
-
-                if (!tempFile.renameTo(ytdlpFile)) {
-                    tempFile.copyTo(ytdlpFile, overwrite = true)
-                    tempFile.delete()
-                }
-
-                try { ytdlpFile.setExecutable(true, false) } catch (_: Exception) {}
-                try {
-                    val p = Runtime.getRuntime().exec(arrayOf("chmod", "755", ytdlpFile.absolutePath))
-                    p.waitFor(5, TimeUnit.SECONDS)
-                } catch (_: Exception) {}
-
-                val canExec = testBinaryExecution()
-                if (!canExec) {
-                    cachedReady = false
-                    val msg = "Binary downloaded but cannot execute on this device. " +
-                        "This may be due to Android security restrictions (SELinux). " +
-                        "The binary was saved to: ${ytdlpFile.absolutePath} (${ytdlpFile.length()} bytes, arch: ${getArchitecture()})"
-                    Log.e("YtdlpEngine", msg)
-                    _updateState.value = UpdateState.Error(msg)
-                    return@withContext Result.failure(Exception(msg))
-                }
-
-                cachedReady = true
                 _updateState.value = UpdateState.Success
-                Result.success(ytdlpFile.absolutePath)
+                Result.success(version)
             } catch (e: Exception) {
-                Log.e("YtdlpEngine", "Failed to update yt-dlp", e)
+                Log.e(TAG, "Failed to update yt-dlp", e)
                 _updateState.value = UpdateState.Error(e.message ?: "Update failed")
                 Result.failure(e)
             }
@@ -188,48 +93,37 @@ class YtdlpEngine(private val context: Context) {
 
     suspend fun getVersion(): String = withContext(Dispatchers.IO) {
         try {
-            val path = getBinaryPath() ?: return@withContext "Not installed"
-            val process = ProcessBuilder(listOf(path, "--version"))
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().readText().trim()
-            process.waitFor(5, TimeUnit.SECONDS)
-            output.ifEmpty { "Unknown" }
+            if (!initialized) initLibrary()
+            if (!isReady) return@withContext "Not installed"
+            YoutubeDL.version(context) ?: "Unknown"
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to get version", e)
             "Error: ${e.message}"
         }
     }
 
     suspend fun getMediaInfo(url: String): Result<MediaInfo> = withContext(Dispatchers.IO) {
-        val bp = getBinaryPath()
-            ?: return@withContext Result.failure(
+        if (!isReady) {
+            return@withContext Result.failure(
                 Exception("yt-dlp not available. Please install it from Settings or Home screen.")
             )
+        }
 
         try {
-            val command = listOf(
-                bp,
-                "--dump-json",
-                "--no-download",
-                "--no-warnings",
-                "--no-check-certificates",
-                url
-            )
+            Log.i(TAG, "Fetching media info for: $url")
 
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
+            val request = YoutubeDLRequest(url)
+            request.addOption("--dump-json")
+            request.addOption("--no-download")
+            request.addOption("--no-warnings")
+            request.addOption("--no-check-certificates")
 
-            val output = process.inputStream.bufferedReader().readText()
-            val completed = process.waitFor(60, TimeUnit.SECONDS)
+            val response: YoutubeDLResponse = YoutubeDL.getInstance().execute(request)
+            val output = response.out
 
-            if (!completed) {
-                process.destroyForcibly()
-                return@withContext Result.failure(Exception("Analysis timed out"))
-            }
-
-            if (process.exitValue() != 0) {
+            if (response.exitCode > 0) {
                 val errorMsg = output.lines().lastOrNull() ?: "Unknown error"
+                Log.e(TAG, "yt-dlp info failed (exit ${response.exitCode}): $errorMsg")
                 return@withContext Result.failure(Exception(errorMsg))
             }
 
@@ -246,7 +140,8 @@ class YtdlpEngine(private val context: Context) {
                         fps = obj["fps"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
                         vcodec = obj["vcodec"]?.jsonPrimitive?.content ?: "none",
                         acodec = obj["acodec"]?.jsonPrimitive?.content ?: "none",
-                        filesize = obj["filesize"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0,
+                        filesize = obj["filesize"]?.jsonPrimitive?.content?.toLongOrNull()
+                            ?: obj["filesize_approx"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0,
                         bitrate = obj["tbr"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0,
                         audioBitrate = obj["abr"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0,
                         quality = obj["format_note"]?.jsonPrimitive?.content ?: "",
@@ -272,8 +167,10 @@ class YtdlpEngine(private val context: Context) {
                 audioFormats = formats.filter { it.hasAudio && !it.hasVideo }
             )
 
+            Log.i(TAG, "Media info fetched: ${info.title}")
             Result.success(info)
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to get media info", e)
             Result.failure(e)
         }
     }
@@ -286,54 +183,58 @@ class YtdlpEngine(private val context: Context) {
         onComplete: (String) -> Unit = {},
         onError: (Exception) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
-        val bp = getBinaryPath()
-            ?: return@withContext Result.failure(Exception("yt-dlp not installed"))
+        if (!isReady) {
+            return@withContext Result.failure(Exception("yt-dlp not installed"))
+        }
+
+        val processId = "$PROCESS_ID_PREFIX${System.currentTimeMillis()}_${processCounter++}"
+        activeDownloads[processId] = url
 
         try {
-            val command = mutableListOf(
-                bp,
-                formatSpec,
-                "-o", outputPath,
-                "--newline",
-                "--no-warnings",
-                "--no-check-certificates",
-                "--progress",
-                url
-            )
+            Log.i(TAG, "Starting download: $url -> $outputPath (processId: $processId)")
 
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
+            val request = YoutubeDLRequest(url)
+            request.addOption(formatSpec)
+            request.addOption("-o", outputPath)
+            request.addOption("--newline")
+            request.addOption("--no-warnings")
+            request.addOption("--no-check-certificates")
+            request.addOption("--progress")
 
-            val reader = process.inputStream.bufferedReader()
-            var lastLine = ""
-
-            while (reader.readLine()?.also { lastLine = it } != null) {
-                if (lastLine.contains("[download]") && lastLine.contains("%")) {
-                    val percentStr = lastLine
-                        .substringAfter("[download] ")
-                        .substringBefore("%")
-                        .trim()
-                    val percent = percentStr.toFloatOrNull() ?: 0f
-                    onProgress(percent, 0, 0)
-                }
+            val response: YoutubeDLResponse = YoutubeDL.getInstance().execute(
+                request,
+                processId
+            ) { progress: Float, eta: Long, line: String ->
+                onProgress(progress, 0L, eta)
             }
 
-            val completed = process.waitFor(30, TimeUnit.MINUTES)
-            if (!completed) {
-                process.destroyForcibly()
-                return@withContext Result.failure(Exception("Download timed out"))
+            activeDownloads.remove(processId)
+
+            if (response.exitCode > 0 && response.exitCode != 130) {
+                val errorMsg = response.err.ifEmpty { response.out.lines().lastOrNull() ?: "Unknown error" }
+                Log.e(TAG, "Download failed (exit ${response.exitCode}): $errorMsg")
+                onError(Exception(errorMsg))
+                return@withContext Result.failure(Exception(errorMsg))
             }
 
-            if (process.exitValue() != 0) {
-                return@withContext Result.failure(Exception("Download failed: $lastLine"))
-            }
-
+            Log.i(TAG, "Download complete: $outputPath")
             onComplete(outputPath)
             Result.success(outputPath)
         } catch (e: Exception) {
+            activeDownloads.remove(processId)
+            Log.e(TAG, "Download failed", e)
             onError(e)
             Result.failure(e)
+        }
+    }
+
+    fun cancelDownload(processId: String): Boolean {
+        activeDownloads.remove(processId)
+        return try {
+            YoutubeDL.getInstance().destroyProcessById(processId)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to cancel download", e)
+            false
         }
     }
 }

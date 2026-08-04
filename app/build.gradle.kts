@@ -59,6 +59,9 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
@@ -114,6 +117,10 @@ dependencies {
 
     // Material Components (for XML themes)
     implementation("com.google.android.material:material:1.12.0")
+
+    // youtubedl-android (yt-dlp + Python + FFmpeg for Android) - same as Seal
+    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
 
     // Splash Screen
     implementation(libs.androidx.splashscreen)
