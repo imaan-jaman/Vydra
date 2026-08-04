@@ -29,7 +29,7 @@ class YtdlpEngine(private val context: Context) {
     private val updateMutex = Mutex()
 
     private val binDir: File by lazy {
-        context.getDir("bin", Context.MODE_PRIVATE).also {
+        File(context.filesDir, "bin").also {
             if (!it.exists()) it.mkdirs()
         }
     }
@@ -45,31 +45,37 @@ class YtdlpEngine(private val context: Context) {
 
     val isReady: Boolean get() {
         if (cachedReady && ytdlpFile.exists() && ytdlpFile.length() > 100_000) return true
-        val ready = checkBinaryReady()
+        val ready = testBinaryExecution()
         cachedReady = ready
         return ready
     }
 
-    private fun checkBinaryReady(): Boolean {
+    private fun testBinaryExecution(): Boolean {
         if (!ytdlpFile.exists()) return false
         if (ytdlpFile.length() < 100_000) return false
-        ensureExecutable()
-        return ytdlpFile.canExecute()
-    }
 
-    private fun ensureExecutable() {
-        if (ytdlpFile.canExecute()) return
-        try { ytdlpFile.setExecutable(true, false) } catch (_: Exception) {}
-        if (ytdlpFile.canExecute()) return
+        try {
+            ytdlpFile.setExecutable(true, false)
+        } catch (_: Exception) {}
+
         try {
             val p = Runtime.getRuntime().exec(arrayOf("chmod", "755", ytdlpFile.absolutePath))
-            p.waitFor(5, TimeUnit.SECONDS)
+            p.waitFor(3, TimeUnit.SECONDS)
         } catch (_: Exception) {}
-        if (ytdlpFile.canExecute()) return
-        try {
-            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "chmod 755 ${ytdlpFile.absolutePath}"))
-            p.waitFor(5, TimeUnit.SECONDS)
-        } catch (_: Exception) {}
+
+        return try {
+            val process = ProcessBuilder(listOf(ytdlpFile.absolutePath, "--version"))
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText().trim()
+            val completed = process.waitFor(10, TimeUnit.SECONDS)
+            val exitCode = if (completed) process.exitValue() else -1
+            Log.i("YtdlpEngine", "Binary test: exit=$exitCode output=$output")
+            completed && exitCode == 0 && output.isNotEmpty()
+        } catch (e: Exception) {
+            Log.e("YtdlpEngine", "Binary execution test failed: ${e.message}")
+            false
+        }
     }
 
     fun getBinaryPath(): String? {
@@ -140,8 +146,9 @@ class YtdlpEngine(private val context: Context) {
 
                 if (tempFile.length() < 100_000) {
                     tempFile.delete()
-                    _updateState.value = UpdateState.Error("Downloaded file too small (${tempFile.length()} bytes)")
-                    return@withContext Result.failure(Exception("Binary too small"))
+                    val msg = "Downloaded file too small (${tempFile.length()} bytes). May not be a valid binary."
+                    _updateState.value = UpdateState.Error(msg)
+                    return@withContext Result.failure(Exception(msg))
                 }
 
                 if (ytdlpFile.exists()) ytdlpFile.delete()
@@ -151,17 +158,25 @@ class YtdlpEngine(private val context: Context) {
                     tempFile.delete()
                 }
 
-                ensureExecutable()
+                try { ytdlpFile.setExecutable(true, false) } catch (_: Exception) {}
+                try {
+                    val p = Runtime.getRuntime().exec(arrayOf("chmod", "755", ytdlpFile.absolutePath))
+                    p.waitFor(5, TimeUnit.SECONDS)
+                } catch (_: Exception) {}
 
-                if (!ytdlpFile.canExecute()) {
-                    Log.e("YtdlpEngine", "All chmod attempts failed")
-                    _updateState.value = UpdateState.Error("Cannot set execute permission on binary")
-                    return@withContext Result.failure(Exception("Permission denied"))
+                val canExec = testBinaryExecution()
+                if (!canExec) {
+                    cachedReady = false
+                    val msg = "Binary downloaded but cannot execute on this device. " +
+                        "This may be due to Android security restrictions (SELinux). " +
+                        "The binary was saved to: ${ytdlpFile.absolutePath} (${ytdlpFile.length()} bytes, arch: ${getArchitecture()})"
+                    Log.e("YtdlpEngine", msg)
+                    _updateState.value = UpdateState.Error(msg)
+                    return@withContext Result.failure(Exception(msg))
                 }
 
                 cachedReady = true
                 _updateState.value = UpdateState.Success
-                Log.i("YtdlpEngine", "Binary ready at: ${ytdlpFile.absolutePath}")
                 Result.success(ytdlpFile.absolutePath)
             } catch (e: Exception) {
                 Log.e("YtdlpEngine", "Failed to update yt-dlp", e)
@@ -188,7 +203,7 @@ class YtdlpEngine(private val context: Context) {
     suspend fun getMediaInfo(url: String): Result<MediaInfo> = withContext(Dispatchers.IO) {
         val bp = getBinaryPath()
             ?: return@withContext Result.failure(
-                Exception("yt-dlp not installed. Tap the button in Settings to install it.")
+                Exception("yt-dlp not available. Please install it from Settings or Home screen.")
             )
 
         try {
