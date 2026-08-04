@@ -6,7 +6,10 @@ import com.vydra.app.data.local.datastore.PreferencesManager
 import com.vydra.app.engine.UpdateState
 import com.vydra.app.engine.YtdlpEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -45,10 +48,20 @@ class SettingsViewModel @Inject constructor(
         viewModelScope, SharingStarted.WhileSubscribed(5000), true
     )
 
-    val ytdlpVersion: String
-        get() = ytdlpEngine.getVersion()
+    private val _ytdlpVersion = MutableStateFlow("Loading...")
+    val ytdlpVersion: StateFlow<String> = _ytdlpVersion.asStateFlow()
 
     val updateState = ytdlpEngine.updateState
+
+    init {
+        loadVersion()
+    }
+
+    private fun loadVersion() {
+        viewModelScope.launch {
+            _ytdlpVersion.value = ytdlpEngine.getVersion()
+        }
+    }
 
     fun setThemeMode(mode: Int) {
         viewModelScope.launch { preferencesManager.setThemeMode(mode) }
@@ -80,7 +93,9 @@ class SettingsViewModel @Inject constructor(
 
     fun updateYtdlp() {
         viewModelScope.launch {
-            ytdlpEngine.updateBinary()
+            ytdlpEngine.updateBinary().onSuccess {
+                loadVersion()
+            }
         }
     }
 }

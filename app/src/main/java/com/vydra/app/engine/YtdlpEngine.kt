@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -16,6 +18,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.TimeUnit
@@ -23,103 +26,170 @@ import java.util.concurrent.TimeUnit
 class YtdlpEngine(private val context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val updateMutex = Mutex()
 
     private val binDir: File by lazy {
-        File(context.filesDir, "bin").also { if (!it.exists()) it.mkdirs() }
+        context.getDir("bin", Context.MODE_PRIVATE).also {
+            if (!it.exists()) it.mkdirs()
+        }
     }
 
     private val ytdlpFile: File by lazy {
         File(binDir, "yt-dlp")
     }
 
-    private var binaryReady = false
-
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
 
-    val isReady: Boolean get() = binaryReady
+    private var cachedReady = false
 
-    init {
-        checkBinary()
+    val isReady: Boolean get() {
+        if (cachedReady && ytdlpFile.exists() && ytdlpFile.length() > 100_000) return true
+        val ready = checkBinaryReady()
+        cachedReady = ready
+        return ready
     }
 
-    private fun checkBinary() {
-        binaryReady = ytdlpFile.exists() && ytdlpFile.length() > 100_000
-        if (!binaryReady) {
-            Log.w("YtdlpEngine", "yt-dlp binary not found or too small")
+    private fun checkBinaryReady(): Boolean {
+        if (!ytdlpFile.exists()) return false
+        if (ytdlpFile.length() < 100_000) return false
+        ensureExecutable()
+        return ytdlpFile.canExecute()
+    }
+
+    private fun ensureExecutable() {
+        if (ytdlpFile.canExecute()) return
+        try { ytdlpFile.setExecutable(true, false) } catch (_: Exception) {}
+        if (ytdlpFile.canExecute()) return
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("chmod", "755", ytdlpFile.absolutePath))
+            p.waitFor(5, TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+        if (ytdlpFile.canExecute()) return
+        try {
+            val p = Runtime.getRuntime().exec(arrayOf("sh", "-c", "chmod 755 ${ytdlpFile.absolutePath}"))
+            p.waitFor(5, TimeUnit.SECONDS)
+        } catch (_: Exception) {}
+    }
+
+    fun getBinaryPath(): String? {
+        return if (isReady) ytdlpFile.absolutePath else null
+    }
+
+    private fun getArchitecture(): String {
+        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: ""
+        return when {
+            abi.contains("arm64") || abi.contains("aarch64") -> "aarch64"
+            abi.contains("arm") -> "armv7l"
+            abi.contains("x86_64") -> "x86_64"
+            abi.contains("x86") -> "x86"
+            else -> "aarch64"
         }
     }
 
-    fun getBinaryPath(): String? = if (binaryReady) ytdlpFile.absolutePath else null
+    private fun getDownloadUrl(): String {
+        val arch = getArchitecture()
+        return "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_$arch"
+    }
+
+    suspend fun ensureBinary(): Result<String> = withContext(Dispatchers.IO) {
+        val path = getBinaryPath()
+        if (path != null) return@withContext Result.success(path)
+        updateBinary()
+    }
 
     suspend fun updateBinary(): Result<String> = withContext(Dispatchers.IO) {
-        try {
-            _updateState.value = UpdateState.Downloading(0)
+        updateMutex.withLock {
+            try {
+                _updateState.value = UpdateState.Downloading(0)
 
-            val url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-            val connection = URL(url).openConnection() as HttpURLConnection
-            connection.connectTimeout = 30_000
-            connection.readTimeout = 60_000
-            connection.connect()
+                val url = getDownloadUrl()
+                Log.i("YtdlpEngine", "Downloading yt-dlp from: $url (arch: ${getArchitecture()})")
 
-            val totalSize = connection.contentLength.toLong()
-            var downloaded = 0L
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 30_000
+                connection.readTimeout = 60_000
+                connection.setRequestProperty("User-Agent", "Vydra/1.0")
+                connection.connect()
 
-            val tempFile = File(binDir, "yt-dlp.tmp")
-            connection.inputStream.use { input ->
-                tempFile.outputStream().use { output ->
-                    val buffer = ByteArray(8192)
-                    var bytesRead: Int
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        downloaded += bytesRead
-                        val progress = if (totalSize > 0) (downloaded * 100 / totalSize).toInt() else 0
-                        _updateState.value = UpdateState.Downloading(progress)
+                if (connection.responseCode != 200) {
+                    val msg = "HTTP ${connection.responseCode} from $url"
+                    _updateState.value = UpdateState.Error(msg)
+                    return@withContext Result.failure(Exception(msg))
+                }
+
+                val totalSize = connection.contentLength.toLong()
+                var downloaded = 0L
+
+                val tempFile = File(binDir, "yt-dlp.tmp")
+                if (tempFile.exists()) tempFile.delete()
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                            output.write(buffer, 0, bytesRead)
+                            downloaded += bytesRead
+                            val progress = if (totalSize > 0) (downloaded * 100 / totalSize).toInt() else 0
+                            _updateState.value = UpdateState.Downloading(progress)
+                        }
                     }
                 }
+                connection.disconnect()
+
+                if (tempFile.length() < 100_000) {
+                    tempFile.delete()
+                    _updateState.value = UpdateState.Error("Downloaded file too small (${tempFile.length()} bytes)")
+                    return@withContext Result.failure(Exception("Binary too small"))
+                }
+
+                if (ytdlpFile.exists()) ytdlpFile.delete()
+
+                if (!tempFile.renameTo(ytdlpFile)) {
+                    tempFile.copyTo(ytdlpFile, overwrite = true)
+                    tempFile.delete()
+                }
+
+                ensureExecutable()
+
+                if (!ytdlpFile.canExecute()) {
+                    Log.e("YtdlpEngine", "All chmod attempts failed")
+                    _updateState.value = UpdateState.Error("Cannot set execute permission on binary")
+                    return@withContext Result.failure(Exception("Permission denied"))
+                }
+
+                cachedReady = true
+                _updateState.value = UpdateState.Success
+                Log.i("YtdlpEngine", "Binary ready at: ${ytdlpFile.absolutePath}")
+                Result.success(ytdlpFile.absolutePath)
+            } catch (e: Exception) {
+                Log.e("YtdlpEngine", "Failed to update yt-dlp", e)
+                _updateState.value = UpdateState.Error(e.message ?: "Update failed")
+                Result.failure(e)
             }
-            connection.disconnect()
-
-            if (tempFile.length() < 100_000) {
-                tempFile.delete()
-                _updateState.value = UpdateState.Error("Downloaded file too small - may be corrupted")
-                return@withContext Result.failure(Exception("Binary too small"))
-            }
-
-            if (ytdlpFile.exists()) ytdlpFile.delete()
-            tempFile.renameTo(ytdlpFile)
-
-            try {
-                Runtime.getRuntime().exec(arrayOf("chmod", "755", ytdlpFile.absolutePath)).waitFor()
-            } catch (_: Exception) {}
-
-            binaryReady = true
-            _updateState.value = UpdateState.Success
-            Result.success(ytdlpFile.absolutePath)
-        } catch (e: Exception) {
-            Log.e("YtdlpEngine", "Failed to update yt-dlp", e)
-            _updateState.value = UpdateState.Error(e.message ?: "Update failed")
-            Result.failure(e)
         }
     }
 
-    fun getVersion(): String {
-        return try {
-            if (!binaryReady) return "Not installed"
-            val process = ProcessBuilder(listOf(ytdlpFile.absolutePath, "--version"))
+    suspend fun getVersion(): String = withContext(Dispatchers.IO) {
+        try {
+            val path = getBinaryPath() ?: return@withContext "Not installed"
+            val process = ProcessBuilder(listOf(path, "--version"))
                 .redirectErrorStream(true)
                 .start()
             val output = process.inputStream.bufferedReader().readText().trim()
             process.waitFor(5, TimeUnit.SECONDS)
             output.ifEmpty { "Unknown" }
-        } catch (_: Exception) {
-            "Unknown"
+        } catch (e: Exception) {
+            "Error: ${e.message}"
         }
     }
 
     suspend fun getMediaInfo(url: String): Result<MediaInfo> = withContext(Dispatchers.IO) {
         val bp = getBinaryPath()
-            ?: return@withContext Result.failure(Exception("yt-dlp not installed. Go to Settings to install it."))
+            ?: return@withContext Result.failure(
+                Exception("yt-dlp not installed. Tap the button in Settings to install it.")
+            )
 
         try {
             val command = listOf(

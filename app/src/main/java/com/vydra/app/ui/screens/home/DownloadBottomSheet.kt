@@ -42,7 +42,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.vydra.app.domain.model.FormatOption
 import com.vydra.app.domain.model.MediaInfo
-import com.vydra.app.ui.components.hapticClick
+import com.vydra.app.ui.components.hapticAction
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -170,27 +170,19 @@ fun DownloadBottomSheet(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         OutlinedButton(
-                            onClick = onDismiss,
-                            modifier = Modifier
-                                .weight(1f)
-                                .hapticClick(onDismiss),
+                            onClick = hapticAction(onDismiss),
+                            modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(16.dp)
                         ) {
                             Text("Cancel", fontWeight = FontWeight.Medium)
                         }
                         Button(
-                            onClick = {
+                            onClick = hapticAction {
                                 selectedFormat?.let { format ->
                                     onDownload(format.formatId, format.quality)
                                 }
                             },
-                            modifier = Modifier
-                                .weight(1f)
-                                .hapticClick {
-                                    selectedFormat?.let { format ->
-                                        onDownload(format.formatId, format.quality)
-                                    }
-                                },
+                            modifier = Modifier.weight(1f),
                             enabled = selectedFormat != null,
                             shape = RoundedCornerShape(16.dp),
                             colors = ButtonDefaults.buttonColors(

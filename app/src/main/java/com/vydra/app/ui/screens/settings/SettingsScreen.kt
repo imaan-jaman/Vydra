@@ -43,9 +43,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -53,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.vydra.app.engine.UpdateState
+import com.vydra.app.ui.components.hapticAction
 import com.vydra.app.ui.components.hapticClick
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,16 +67,14 @@ fun SettingsScreen(
     val backgroundDownloads by viewModel.backgroundDownloads.collectAsState()
     val autoUpdateYtdlp by viewModel.autoUpdateYtdlp.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
+    val ytdlpVersion by viewModel.ytdlpVersion.collectAsState()
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Settings", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(
-                        onClick = onNavigateBack,
-                        modifier = Modifier.hapticClick(onNavigateBack)
-                    ) {
+                    IconButton(onClick = hapticAction(onNavigateBack)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -170,7 +166,7 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Text(
-                                text = viewModel.ytdlpVersion,
+                                text = ytdlpVersion,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -216,9 +212,7 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = { viewModel.updateYtdlp() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .hapticClick { viewModel.updateYtdlp() },
+                        modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
                         enabled = updateState !is UpdateState.Downloading,
                         colors = ButtonDefaults.buttonColors(

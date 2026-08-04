@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -55,8 +56,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.vydra.app.data.local.entity.DownloadEntity
+import com.vydra.app.ui.components.WavyProgressIndicator
+import com.vydra.app.ui.components.hapticAction
 import com.vydra.app.ui.components.hapticClick
-import com.vydra.app.ui.components.hapticClickable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,22 +93,13 @@ fun HomeScreen(
                     )
                 },
                 actions = {
-                    IconButton(
-                        onClick = onNavigateToSearch,
-                        modifier = Modifier.hapticClick { onNavigateToSearch() }
-                    ) {
+                    IconButton(onClick = hapticAction(onNavigateToSearch)) {
                         Icon(Icons.Default.Search, contentDescription = "Search")
                     }
-                    IconButton(
-                        onClick = onNavigateToDownloads,
-                        modifier = Modifier.hapticClick { onNavigateToDownloads() }
-                    ) {
+                    IconButton(onClick = hapticAction(onNavigateToDownloads)) {
                         Icon(Icons.Default.Download, contentDescription = "Downloads")
                     }
-                    IconButton(
-                        onClick = onNavigateToSettings,
-                        modifier = Modifier.hapticClick { onNavigateToSettings() }
-                    ) {
+                    IconButton(onClick = hapticAction(onNavigateToSettings)) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 },
@@ -123,6 +116,16 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item { Spacer(modifier = Modifier.height(8.dp)) }
+
+            if (!uiState.binaryReady) {
+                item {
+                    SetupBanner(
+                        isInstalling = uiState.isInstalling,
+                        progress = uiState.installProgress,
+                        onInstall = viewModel::installBinary
+                    )
+                }
+            }
 
             item {
                 PasteLinkCard(
@@ -217,10 +220,8 @@ fun PasteLinkCard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 FilledTonalButton(
-                    onClick = onPasteClick,
-                    modifier = Modifier
-                        .weight(1f)
-                        .hapticClick(onPasteClick),
+                    onClick = hapticAction(onPasteClick),
+                    modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(16.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
                 ) {
@@ -229,10 +230,8 @@ fun PasteLinkCard(
                     Text("Paste", fontWeight = FontWeight.SemiBold)
                 }
                 Button(
-                    onClick = onDownloadClick,
-                    modifier = Modifier
-                        .weight(1f)
-                        .hapticClick(onDownloadClick),
+                    onClick = hapticAction(onDownloadClick),
+                    modifier = Modifier.weight(1f),
                     enabled = url.isNotBlank() && !isLoading,
                     shape = RoundedCornerShape(16.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -243,6 +242,74 @@ fun PasteLinkCard(
                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Download", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SetupBanner(
+    isInstalling: Boolean,
+    progress: Int,
+    onInstall: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.SystemUpdate,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = "Setup Required",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "yt-dlp needs to be installed before you can download videos. This is a one-time setup.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            if (isInstalling) {
+                WavyProgressIndicator(
+                    progress = progress.toFloat(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp),
+                    heightDp = 8
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Installing... $progress%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            } else {
+                Button(
+                    onClick = hapticAction(onInstall),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Install yt-dlp", fontWeight = FontWeight.Bold)
                 }
             }
         }

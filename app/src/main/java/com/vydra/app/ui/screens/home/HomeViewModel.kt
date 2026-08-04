@@ -7,13 +7,17 @@ import com.vydra.app.domain.model.MediaInfo
 import com.vydra.app.domain.repository.DownloadRepository
 import com.vydra.app.domain.usecase.AnalyzeUrlUseCase
 import com.vydra.app.domain.usecase.StartDownloadUseCase
+import com.vydra.app.engine.UpdateState
+import com.vydra.app.engine.YtdlpEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class HomeUiState(
@@ -21,13 +25,17 @@ data class HomeUiState(
     val isLoading: Boolean = false,
     val mediaInfo: MediaInfo? = null,
     val error: String? = null,
-    val showBottomSheet: Boolean = false
+    val showBottomSheet: Boolean = false,
+    val binaryReady: Boolean = false,
+    val isInstalling: Boolean = false,
+    val installProgress: Int = 0
 )
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val analyzeUrlUseCase: AnalyzeUrlUseCase,
     private val startDownloadUseCase: StartDownloadUseCase,
+    private val ytdlpEngine: YtdlpEngine,
     downloadRepository: DownloadRepository
 ) : ViewModel() {
 
@@ -37,6 +45,54 @@ class HomeViewModel @Inject constructor(
     val recentDownloads: StateFlow<List<DownloadEntity>> = downloadRepository
         .getAllDownloads()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    init {
+        viewModelScope.launch {
+            val ready = withContext(Dispatchers.IO) { ytdlpEngine.isReady }
+            _uiState.value = _uiState.value.copy(binaryReady = ready)
+        }
+        observeUpdateState()
+    }
+
+    private fun observeUpdateState() {
+        viewModelScope.launch {
+            ytdlpEngine.updateState.collect { state ->
+                when (state) {
+                    is UpdateState.Downloading -> {
+                        _uiState.value = _uiState.value.copy(
+                            isInstalling = true,
+                            installProgress = state.progress
+                        )
+                    }
+                    is UpdateState.Success -> {
+                        _uiState.value = _uiState.value.copy(
+                            binaryReady = true,
+                            isInstalling = false
+                        )
+                    }
+                    is UpdateState.Error -> {
+                        _uiState.value = _uiState.value.copy(
+                            isInstalling = false,
+                            error = state.message
+                        )
+                    }
+                    is UpdateState.Idle -> {}
+                }
+            }
+        }
+    }
+
+    fun installBinary() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isInstalling = true)
+            ytdlpEngine.updateBinary().onFailure { e ->
+                _uiState.value = _uiState.value.copy(
+                    isInstalling = false,
+                    error = e.message ?: "Install failed"
+                )
+            }
+        }
+    }
 
     fun onUrlChanged(url: String) {
         _uiState.value = _uiState.value.copy(url = url, error = null)
@@ -50,6 +106,13 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            val ready = withContext(Dispatchers.IO) { ytdlpEngine.isReady }
+            if (!ready) {
+                _uiState.value = _uiState.value.copy(error = "Installing yt-dlp... Please wait a moment and try again.")
+                installBinary()
+                return@launch
+            }
+
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             analyzeUrlUseCase(url)
                 .onSuccess { info ->
@@ -70,20 +133,28 @@ class HomeViewModel @Inject constructor(
 
     fun startDownload(formatId: String, quality: String) {
         val mediaInfo = _uiState.value.mediaInfo ?: return
+        val url = _uiState.value.url
         viewModelScope.launch {
-            startDownloadUseCase(
-                mediaInfo = mediaInfo,
-                request = com.vydra.app.domain.model.DownloadRequest(
-                    url = _uiState.value.url,
-                    formatId = formatId,
-                    quality = quality
+            try {
+                startDownloadUseCase(
+                    mediaInfo = mediaInfo,
+                    request = com.vydra.app.domain.model.DownloadRequest(
+                        url = url,
+                        formatId = formatId,
+                        quality = quality
+                    )
                 )
-            )
-            _uiState.value = _uiState.value.copy(
-                showBottomSheet = false,
-                url = "",
-                mediaInfo = null
-            )
+                _uiState.value = _uiState.value.copy(
+                    showBottomSheet = false,
+                    url = "",
+                    mediaInfo = null
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    showBottomSheet = false,
+                    error = e.message ?: "Download failed to start"
+                )
+            }
         }
     }
 

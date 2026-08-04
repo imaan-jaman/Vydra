@@ -47,11 +47,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import java.util.Locale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.vydra.app.data.local.entity.DownloadEntity
 import com.vydra.app.ui.components.WavyProgressIndicator
+import com.vydra.app.ui.components.hapticAction
 import com.vydra.app.ui.components.hapticClick
 
 private val tabs = listOf("Active", "Queued", "Completed", "Failed")
@@ -81,10 +83,7 @@ fun DownloadsScreen(
             TopAppBar(
                 title = { Text("Downloads", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(
-                        onClick = onNavigateBack,
-                        modifier = Modifier.hapticClick(onNavigateBack)
-                    ) {
+                    IconButton(onClick = hapticAction(onNavigateBack)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -250,8 +249,7 @@ fun DownloadItemCard(
                 when (download.status) {
                     "DOWNLOADING" -> {
                         OutlinedButton(
-                            onClick = onPause,
-                            modifier = Modifier.hapticClick(onPause),
+                            onClick = hapticAction(onPause),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Pause, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -260,8 +258,7 @@ fun DownloadItemCard(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         Button(
-                            onClick = onCancel,
-                            modifier = Modifier.hapticClick(onCancel),
+                            onClick = hapticAction(onCancel),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
@@ -272,8 +269,7 @@ fun DownloadItemCard(
                     }
                     "QUEUED" -> {
                         Button(
-                            onClick = onCancel,
-                            modifier = Modifier.hapticClick(onCancel),
+                            onClick = hapticAction(onCancel),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
@@ -286,8 +282,7 @@ fun DownloadItemCard(
                     }
                     "FAILED" -> {
                         Button(
-                            onClick = onRetry,
-                            modifier = Modifier.hapticClick(onRetry),
+                            onClick = hapticAction(onRetry),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primary
@@ -299,8 +294,7 @@ fun DownloadItemCard(
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         OutlinedButton(
-                            onClick = onDelete,
-                            modifier = Modifier.hapticClick(onDelete),
+                            onClick = hapticAction(onDelete),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -308,8 +302,7 @@ fun DownloadItemCard(
                     }
                     "COMPLETED" -> {
                         OutlinedButton(
-                            onClick = onDelete,
-                            modifier = Modifier.hapticClick(onDelete),
+                            onClick = hapticAction(onDelete),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -325,8 +318,8 @@ fun DownloadItemCard(
 
 private fun formatSpeed(bytesPerSecond: Long): String {
     return when {
-        bytesPerSecond >= 1_048_576 -> String.format("%.1f MB/s", bytesPerSecond / 1_048_576.0)
-        bytesPerSecond >= 1024 -> String.format("%.1f KB/s", bytesPerSecond / 1024.0)
+        bytesPerSecond >= 1_048_576 -> String.format(Locale.US, "%.1f MB/s", bytesPerSecond / 1_048_576.0)
+        bytesPerSecond >= 1024 -> String.format(Locale.US, "%.1f KB/s", bytesPerSecond / 1024.0)
         else -> "$bytesPerSecond B/s"
     }
 }

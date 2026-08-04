@@ -100,7 +100,8 @@ class ShareActivity : ComponentActivity() {
 
     private fun extractUrl(text: String): String {
         val urlPattern = Regex("(https?://[^\\s]+)")
-        return urlPattern.find(text)?.value ?: text.trim()
+        val match = urlPattern.find(text)?.value ?: text.trim()
+        return match.trimEnd('.', ',', ';', '!', '?', ')', ']', '"', '\'')
     }
 }
 
@@ -116,12 +117,18 @@ fun ShareDownloadDialog(
     var state by remember { mutableStateOf<ShareUiState>(ShareUiState.Analyzing) }
 
     LaunchedEffect(url) {
-        ytdlpEngine.getMediaInfo(url)
-            .onSuccess { info ->
-                state = ShareUiState.Ready(info)
+        ytdlpEngine.ensureBinary()
+            .onSuccess {
+                ytdlpEngine.getMediaInfo(url)
+                    .onSuccess { info ->
+                        state = ShareUiState.Ready(info)
+                    }
+                    .onFailure { e ->
+                        state = ShareUiState.Error(e.message ?: "Failed to analyze link")
+                    }
             }
             .onFailure { e ->
-                state = ShareUiState.Error(e.message ?: "Failed to analyze link")
+                state = ShareUiState.Error(e.message ?: "Failed to install yt-dlp")
             }
     }
 
@@ -217,15 +224,19 @@ fun ShareDownloadDialog(
                             Button(
                                 onClick = {
                                     scope.launch {
-                                        startDownloadUseCase(
-                                            mediaInfo = currentState.info,
-                                            request = DownloadRequest(
-                                                url = url,
-                                                downloadType = DownloadType.VIDEO,
-                                                quality = "best"
+                                        try {
+                                            startDownloadUseCase(
+                                                mediaInfo = currentState.info,
+                                                request = DownloadRequest(
+                                                    url = url,
+                                                    downloadType = DownloadType.VIDEO,
+                                                    quality = "best"
+                                                )
                                             )
-                                        )
-                                        onDownloadStarted()
+                                            onDownloadStarted()
+                                        } catch (e: Exception) {
+                                            state = ShareUiState.Error(e.message ?: "Failed to start download")
+                                        }
                                     }
                                 },
                                 modifier = Modifier.weight(1f),

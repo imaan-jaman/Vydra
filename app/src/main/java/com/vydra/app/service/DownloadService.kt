@@ -25,7 +25,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -39,7 +41,8 @@ class DownloadService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _currentDownload = MutableStateFlow<DownloadEntity?>(null)
-    private var currentJob: Job? = null
+    private val activeJobs = ConcurrentHashMap<Long, Job>()
+    private var lastDbWriteTime = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -48,6 +51,7 @@ class DownloadService : Service() {
             ACTION_START -> {
                 val downloadId = intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1)
                 val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
+                startForeground(getNotificationId(downloadId), createPlaceholderNotification())
                 startDownload(downloadId, url)
             }
             ACTION_PAUSE -> {
@@ -63,13 +67,31 @@ class DownloadService : Service() {
     }
 
     private fun startDownload(downloadId: Long, url: String) {
-        currentJob?.cancel()
-        currentJob = serviceScope.launch {
+        activeJobs[downloadId]?.cancel()
+
+        activeJobs[downloadId] = serviceScope.launch {
             try {
-                val download = downloadRepository.getDownloadById(downloadId) ?: return@launch
+
+                if (!ytdlpEngine.isReady) {
+                    val updated = downloadRepository.getDownloadById(downloadId)?.copy(
+                        status = "FAILED",
+                        errorMessage = "yt-dlp is not installed. Please install it from Settings."
+                    )
+                    updated?.let { downloadRepository.updateDownload(it) }
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@launch
+                }
+
+                val download = downloadRepository.getDownloadById(downloadId) ?: run {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@launch
+                }
                 _currentDownload.value = download
 
-                startForeground(getNotificationId(downloadId), createNotification(download))
+                downloadRepository.updateDownload(download.copy(status = "DOWNLOADING"))
+                updateNotification(download)
 
                 val outputDir = getExternalFilesDir(null) ?: filesDir
                 val safeName = download.title
@@ -87,16 +109,18 @@ class DownloadService : Service() {
                     formatSpec = formatSpec,
                     outputPath = outputPath,
                     onProgress = { progress, _, _ ->
-                        serviceScope.launch {
-                            try {
-                                val updated = download.copy(
-                                    progress = progress,
-                                    status = "DOWNLOADING"
-                                )
-                                downloadRepository.updateDownload(updated)
-                                updateNotification(updated)
-                            } catch (e: Exception) {
-                                Log.e("DownloadService", "Failed to update progress", e)
+                        val now = System.currentTimeMillis()
+                        if (now - lastDbWriteTime > 500) {
+                            lastDbWriteTime = now
+                            serviceScope.launch {
+                                try {
+                                    downloadRepository.updateDownload(
+                                        download.copy(progress = progress, status = "DOWNLOADING")
+                                    )
+                                    updateNotification(download.copy(progress = progress))
+                                } catch (e: Exception) {
+                                    Log.e("DownloadService", "Failed to update progress", e)
+                                }
                             }
                         }
                     },
@@ -110,9 +134,11 @@ class DownloadService : Service() {
                                     completedAt = System.currentTimeMillis()
                                 )
                                 downloadRepository.updateDownload(updated)
-                                showCompletedNotification(updated)
-                                stopForeground(STOP_FOREGROUND_REMOVE)
-                                stopSelf()
+                                withContext(Dispatchers.Main) {
+                                    showCompletedNotification(updated)
+                                    stopForeground(STOP_FOREGROUND_REMOVE)
+                                    stopSelf()
+                                }
                             } catch (e: Exception) {
                                 Log.e("DownloadService", "Failed to complete", e)
                             }
@@ -121,13 +147,13 @@ class DownloadService : Service() {
                     onError = { error ->
                         serviceScope.launch {
                             try {
-                                val updated = download.copy(
-                                    status = "FAILED",
-                                    errorMessage = error.message
+                                downloadRepository.updateDownload(
+                                    download.copy(status = "FAILED", errorMessage = error.message)
                                 )
-                                downloadRepository.updateDownload(updated)
-                                stopForeground(STOP_FOREGROUND_REMOVE)
-                                stopSelf()
+                                withContext(Dispatchers.Main) {
+                                    stopForeground(STOP_FOREGROUND_REMOVE)
+                                    stopSelf()
+                                }
                             } catch (e: Exception) {
                                 Log.e("DownloadService", "Failed to handle error", e)
                             }
@@ -137,23 +163,25 @@ class DownloadService : Service() {
             } catch (e: Exception) {
                 Log.e("DownloadService", "Download failed unexpectedly", e)
                 try {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    withContext(Dispatchers.Main) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 } catch (_: Exception) {}
             }
         }
     }
 
     private fun pauseDownload(downloadId: Long) {
-        currentJob?.cancel()
-        currentJob = null
+        activeJobs.remove(downloadId)?.cancel()
         serviceScope.launch {
             try {
                 val download = downloadRepository.getDownloadById(downloadId) ?: return@launch
-                val updated = download.copy(status = "PAUSED")
-                downloadRepository.updateDownload(updated)
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                downloadRepository.updateDownload(download.copy(status = "PAUSED"))
+                withContext(Dispatchers.Main) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             } catch (e: Exception) {
                 Log.e("DownloadService", "Failed to pause", e)
             }
@@ -161,13 +189,14 @@ class DownloadService : Service() {
     }
 
     private fun cancelDownload(downloadId: Long) {
-        currentJob?.cancel()
-        currentJob = null
+        activeJobs.remove(downloadId)?.cancel()
         serviceScope.launch {
             try {
                 downloadRepository.deleteDownloadById(downloadId)
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                withContext(Dispatchers.Main) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             } catch (e: Exception) {
                 Log.e("DownloadService", "Failed to cancel", e)
             }
@@ -176,6 +205,15 @@ class DownloadService : Service() {
 
     private fun getNotificationId(downloadId: Long): Int {
         return (NOTIFICATION_BASE_ID + downloadId).toInt()
+    }
+
+    private fun createPlaceholderNotification(): Notification {
+        return NotificationCompat.Builder(this, VydraApp.DOWNLOAD_CHANNEL_ID)
+            .setContentTitle("Preparing download...")
+            .setSmallIcon(R.drawable.ic_download)
+            .setOngoing(true)
+            .setSilent(true)
+            .build()
     }
 
     private fun createNotification(download: DownloadEntity): Notification {
@@ -199,11 +237,21 @@ class DownloadService : Service() {
     }
 
     private fun updateNotification(download: DownloadEntity) {
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         val notification = NotificationCompat.Builder(this, VydraApp.DOWNLOAD_CHANNEL_ID)
             .setContentTitle(download.title)
             .setContentText("${download.progress.toInt()}%")
             .setProgress(100, download.progress.toInt(), false)
             .setSmallIcon(R.drawable.ic_download)
+            .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setSilent(true)
             .build()
@@ -213,6 +261,8 @@ class DownloadService : Service() {
     }
 
     private fun showCompletedNotification(download: DownloadEntity) {
+        if (download.filePath.isBlank() || !File(download.filePath).exists()) return
+
         val fileIntent = Intent(Intent.ACTION_VIEW).apply {
             val uri = FileProvider.getUriForFile(
                 this@DownloadService,
@@ -245,7 +295,8 @@ class DownloadService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        currentJob?.cancel()
+        activeJobs.values.forEach { it.cancel() }
+        activeJobs.clear()
         serviceScope.cancel()
     }
 
@@ -275,7 +326,11 @@ class DownloadService : Service() {
                 action = ACTION_PAUSE
                 putExtra(EXTRA_DOWNLOAD_ID, downloadId)
             }
-            context.startService(intent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
 
         fun cancelDownload(context: Context, downloadId: Long) {
@@ -283,7 +338,11 @@ class DownloadService : Service() {
                 action = ACTION_CANCEL
                 putExtra(EXTRA_DOWNLOAD_ID, downloadId)
             }
-            context.startService(intent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
     }
 }
