@@ -30,7 +30,10 @@
 ## Screenshots
 
 <p align="center">
-  <em>Screenshots coming soon</em>
+  <img src="screenshots/home-dark.png" width="24%" alt="Home Dark">
+  <img src="screenshots/home-light.png" width="24%" alt="Home Light">
+  <img src="screenshots/downloads-dark.png" width="24%" alt="Downloads">
+  <img src="screenshots/settings-dark.png" width="24%" alt="Settings">
 </p>
 
 ---
@@ -39,7 +42,7 @@
 
 ### Download
 
-Get the latest APK from [Releases](https://github.com/vydra-app/vydra/releases).
+Get the latest APK from [**Releases**](https://github.com/imaan-jaman/Vydra/releases/latest).
 
 ### Build from source
 
