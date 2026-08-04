@@ -8,7 +8,6 @@ import android.util.Log
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.yausername.youtubedl_android.YoutubeDL
-import com.yausername.ffmpeg.FFmpeg
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -35,12 +34,6 @@ class VydraApp : Application(), Configuration.Provider {
             Log.i("VydraApp", "YoutubeDL initialized")
         } catch (e: Exception) {
             Log.e("VydraApp", "YoutubeDL init failed", e)
-        }
-        try {
-            FFmpeg.getInstance().init(this)
-            Log.i("VydraApp", "FFmpeg initialized")
-        } catch (e: Exception) {
-            Log.e("VydraApp", "FFmpeg init failed", e)
         }
     }
 

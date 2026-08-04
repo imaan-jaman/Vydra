@@ -177,7 +177,7 @@ class YtdlpEngine(private val context: Context) {
 
     suspend fun download(
         url: String,
-        formatSpec: String,
+        formatArgs: List<String> = listOf("-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"),
         outputPath: String,
         onProgress: (Float, Long, Long) -> Unit = { _: Float, _: Long, _: Long -> },
         onComplete: (String) -> Unit = {},
@@ -194,7 +194,7 @@ class YtdlpEngine(private val context: Context) {
             Log.i(TAG, "Starting download: $url -> $outputPath (processId: $processId)")
 
             val request = YoutubeDLRequest(url)
-            request.addOption(formatSpec)
+            formatArgs.forEach { request.addOption(it) }
             request.addOption("-o", outputPath)
             request.addOption("--newline")
             request.addOption("--no-warnings")

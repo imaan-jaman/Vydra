@@ -32,3 +32,19 @@
 # Compose
 -dontwarn androidx.compose.**
 -keep class androidx.compose.** { *; }
+
+# youtubedl-android
+-keep class com.yausername.youtubedl_android.** { *; }
+-keep class com.yausername.ffmpeg.** { *; }
+-keep class com.yausername.youtubedl_common.** { *; }
+
+# Jackson (used by youtubedl-android internally)
+-keep class com.fasterxml.jackson.** { *; }
+-dontwarn com.fasterxml.jackson.**
+-keepclassmembers class * {
+    @com.fasterxml.jackson.annotation.JsonProperty <fields>;
+}
+-keep class com.yausername.youtubedl_android.mapper.** { *; }
+
+# Apache Commons IO (used by youtubedl-android)
+-dontwarn org.apache.commons.io.**

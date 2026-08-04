@@ -121,16 +121,16 @@ class DownloadService : Service() {
                 val finalFile = File(outputDir, fileName)
 
                 val quality = download.quality
-                val formatSpec = buildFormatSpec(quality, ext)
+                val formatArgs = buildFormatArgs(quality, ext)
 
                 Log.i("DownloadService", "Downloading: $url")
-                Log.i("DownloadService", "Format spec: $formatSpec")
+                Log.i("DownloadService", "Format args: $formatArgs")
                 Log.i("DownloadService", "Temp file: ${tempFile.absolutePath}")
                 Log.i("DownloadService", "Final file: ${finalFile.absolutePath}")
 
                 ytdlpEngine.download(
                     url = url,
-                    formatSpec = formatSpec,
+                    formatArgs = formatArgs,
                     outputPath = tempFile.absolutePath,
                     onProgress = { progress, _, _ ->
                         val now = System.currentTimeMillis()
@@ -204,25 +204,25 @@ class DownloadService : Service() {
         }
     }
 
-    private fun buildFormatSpec(quality: String, ext: String): String {
+    private fun buildFormatArgs(quality: String, ext: String): List<String> {
         return when {
             quality.contains("mp3", ignoreCase = true) ->
-                "-x --audio-format mp3 --audio-quality 192K"
+                listOf("-f", "bestaudio[ext=m4a]/bestaudio", "--audio-format", "mp3")
             quality.contains("m4a", ignoreCase = true) ->
-                "-x --audio-format m4a --audio-quality 192K"
+                listOf("-f", "bestaudio[ext=m4a]/bestaudio")
             quality.contains("4k", ignoreCase = true) ||
             quality.contains("2160", ignoreCase = true) ->
-                "-f \"bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+                listOf("-f", "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
             quality.contains("1080", ignoreCase = true) ->
-                "-f \"bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+                listOf("-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
             quality.contains("720", ignoreCase = true) ->
-                "-f \"bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+                listOf("-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
             quality.contains("480", ignoreCase = true) ->
-                "-f \"bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+                listOf("-f", "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
             quality.contains("360", ignoreCase = true) ->
-                "-f \"bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+                listOf("-f", "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
             else ->
-                "-f \"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+                listOf("-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
         }
     }
 
