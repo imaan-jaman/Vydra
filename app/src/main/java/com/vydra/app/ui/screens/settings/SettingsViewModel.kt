@@ -3,6 +3,8 @@ package com.vydra.app.ui.screens.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vydra.app.data.local.datastore.PreferencesManager
+import com.vydra.app.engine.UpdateState
+import com.vydra.app.engine.YtdlpEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
@@ -11,7 +13,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val preferencesManager: PreferencesManager
+    private val preferencesManager: PreferencesManager,
+    private val ytdlpEngine: YtdlpEngine
 ) : ViewModel() {
 
     val themeMode = preferencesManager.themeMode.stateIn(
@@ -42,9 +45,10 @@ class SettingsViewModel @Inject constructor(
         viewModelScope, SharingStarted.WhileSubscribed(5000), true
     )
 
-    val autoClearCache = preferencesManager.autoClearCache.stateIn(
-        viewModelScope, SharingStarted.WhileSubscribed(5000), false
-    )
+    val ytdlpVersion: String
+        get() = ytdlpEngine.getVersion()
+
+    val updateState = ytdlpEngine.updateState
 
     fun setThemeMode(mode: Int) {
         viewModelScope.launch { preferencesManager.setThemeMode(mode) }
@@ -74,7 +78,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { preferencesManager.setAutoUpdateYtdlp(enabled) }
     }
 
-    fun setAutoClearCache(enabled: Boolean) {
-        viewModelScope.launch { preferencesManager.setAutoClearCache(enabled) }
+    fun updateYtdlp() {
+        viewModelScope.launch {
+            ytdlpEngine.updateBinary()
+        }
     }
 }

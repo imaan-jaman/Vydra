@@ -16,6 +16,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -24,7 +26,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -35,11 +36,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.vydra.app.domain.model.FormatOption
 import com.vydra.app.domain.model.MediaInfo
+import com.vydra.app.ui.components.hapticClick
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -168,22 +171,33 @@ fun DownloadBottomSheet(
                     ) {
                         OutlinedButton(
                             onClick = onDismiss,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
+                            modifier = Modifier
+                                .weight(1f)
+                                .hapticClick(onDismiss),
+                            shape = RoundedCornerShape(16.dp)
                         ) {
-                            Text("Cancel")
+                            Text("Cancel", fontWeight = FontWeight.Medium)
                         }
-                        TextButton(
+                        Button(
                             onClick = {
                                 selectedFormat?.let { format ->
                                     onDownload(format.formatId, format.quality)
                                 }
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .hapticClick {
+                                    selectedFormat?.let { format ->
+                                        onDownload(format.formatId, format.quality)
+                                    }
+                                },
                             enabled = selectedFormat != null,
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary
+                            )
                         ) {
-                            Text("Download")
+                            Text("Download", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

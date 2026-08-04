@@ -1,6 +1,5 @@
 package com.vydra.app.ui.screens.settings
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,21 +16,22 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Brightness6
 import androidx.compose.material.icons.filled.ColorLens
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -43,12 +43,17 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.vydra.app.engine.UpdateState
+import com.vydra.app.ui.components.hapticClick
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,14 +68,17 @@ fun SettingsScreen(
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
     val backgroundDownloads by viewModel.backgroundDownloads.collectAsState()
     val autoUpdateYtdlp by viewModel.autoUpdateYtdlp.collectAsState()
-    val autoClearCache by viewModel.autoClearCache.collectAsState()
+    val updateState by viewModel.updateState.collectAsState()
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text("Settings", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
+                    IconButton(
+                        onClick = onNavigateBack,
+                        modifier = Modifier.hapticClick(onNavigateBack)
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -107,7 +115,7 @@ fun SettingsScreen(
                 SwitchOption(
                     icon = Icons.Default.ColorLens,
                     title = "Dynamic Color",
-                    subtitle = "Use Material You colors",
+                    subtitle = "Material You colors",
                     checked = dynamicColor,
                     onCheckedChange = viewModel::setDynamicColor
                 )
@@ -133,13 +141,6 @@ fun SettingsScreen(
                     onValueChange = { viewModel.setMaxRetries(it.toInt()) },
                     displayValue = "$maxRetries"
                 )
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                SettingsOption(
-                    icon = Icons.Default.Folder,
-                    title = "Download Location",
-                    subtitle = "Default download directory",
-                    onClick = { }
-                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -153,26 +154,87 @@ fun SettingsScreen(
                     onCheckedChange = viewModel::setAutoUpdateYtdlp
                 )
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                SwitchOption(
-                    icon = Icons.Default.Delete,
-                    title = "Auto Clear Cache",
-                    subtitle = "Clear cache after download",
-                    checked = autoClearCache,
-                    onCheckedChange = viewModel::setAutoClearCache
-                )
+
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "yt-dlp Version",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Text(
+                                text = viewModel.ytdlpVersion,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    when (val state = updateState) {
+                        is UpdateState.Downloading -> {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(32.dp),
+                                    strokeWidth = 3.dp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Downloading... ${state.progress}%",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                        is UpdateState.Success -> {
+                            Text(
+                                text = "Updated successfully!",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        is UpdateState.Error -> {
+                            Text(
+                                text = state.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        is UpdateState.Idle -> {}
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.updateYtdlp() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .hapticClick { viewModel.updateYtdlp() },
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = updateState !is UpdateState.Downloading,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Update yt-dlp", fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             SettingsSection("Notifications") {
-                SwitchOption(
-                    icon = Icons.Default.Star,
-                    title = "Notifications",
-                    subtitle = "Show download notifications",
-                    checked = notificationsEnabled,
-                    onCheckedChange = viewModel::setNotificationsEnabled
-                )
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 SwitchOption(
                     icon = Icons.Default.FastForward,
                     title = "Background Downloads",
@@ -185,12 +247,32 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             SettingsSection("About") {
-                SettingsOption(
-                    icon = Icons.Default.Info,
-                    title = "Version",
-                    subtitle = "1.0.0",
-                    onClick = { }
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Download,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Vydra",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Version 1.0.0",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -212,7 +294,7 @@ private fun SettingsSection(
             modifier = Modifier.padding(vertical = 8.dp)
         )
         Card(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant
             ),
@@ -233,7 +315,7 @@ private fun SettingsOption(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .hapticClick(onClick)
             .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -245,10 +327,7 @@ private fun SettingsOption(
         )
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge
-            )
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
@@ -280,10 +359,7 @@ private fun SwitchOption(
         )
         Spacer(modifier = Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge
-            )
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
@@ -348,5 +424,3 @@ private fun SliderOption(
         )
     }
 }
-
-
