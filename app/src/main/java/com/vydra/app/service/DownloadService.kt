@@ -46,7 +46,7 @@ class DownloadService : Service() {
     private val activeJobs = ConcurrentHashMap<Long, Job>()
     private val activeTempFiles = ConcurrentHashMap<Long, File>()
     private var lastDbWriteTime = 0L
-    private var isForeground = false
+    @Volatile private var isForeground = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -55,20 +55,40 @@ class DownloadService : Service() {
             ACTION_START -> {
                 val downloadId = intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1)
                 val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
-                startForeground(getNotificationId(downloadId), createPlaceholderNotification())
-                isForeground = true
+                ensureForeground(downloadId)
                 startDownload(downloadId, url)
             }
             ACTION_PAUSE -> {
                 val downloadId = intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1)
+                ensureForeground(downloadId)
                 pauseDownload(downloadId)
             }
             ACTION_CANCEL -> {
                 val downloadId = intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1)
+                ensureForeground(downloadId)
                 cancelDownload(downloadId)
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun ensureForeground(downloadId: Long) {
+        if (!isForeground) {
+            startForeground(getNotificationId(downloadId), createPlaceholderNotification())
+            isForeground = true
+        }
+    }
+
+    private fun maybeStopService() {
+        if (activeJobs.isEmpty() && isForeground) {
+            isForeground = false
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to stop service", e)
+            }
+        }
     }
 
     private fun getDownloadDir(): File {
@@ -92,12 +112,14 @@ class DownloadService : Service() {
                             download.copy(status = "FAILED", errorMessage = "yt-dlp engine not ready")
                         )
                     }
-                    stopServiceSafe()
+                    activeJobs.remove(downloadId)
+                    maybeStopService()
                     return@launch
                 }
 
                 val download = downloadRepository.getDownloadById(downloadId) ?: run {
-                    stopServiceSafe()
+                    activeJobs.remove(downloadId)
+                    maybeStopService()
                     return@launch
                 }
                 _currentDownload.value = download
@@ -160,14 +182,15 @@ class DownloadService : Service() {
                                 withContext(Dispatchers.Main) {
                                     val updated = download.copy(filePath = savedPath, status = "COMPLETED")
                                     showCompletedNotification(updated)
-                                    stopServiceSafe()
                                 }
                             } catch (e: Exception) {
                                 Log.e(TAG, "Failed to save download", e)
                                 downloadRepository.updateDownload(
                                     download.copy(status = "FAILED", errorMessage = e.message)
                                 )
-                                stopServiceSafe()
+                            } finally {
+                                activeJobs.remove(downloadId)
+                                maybeStopService()
                             }
                         }
                     },
@@ -179,7 +202,8 @@ class DownloadService : Service() {
                             downloadRepository.updateDownload(
                                 download.copy(status = "FAILED", errorMessage = error.message)
                             )
-                            stopServiceSafe()
+                            activeJobs.remove(downloadId)
+                            maybeStopService()
                         }
                     }
                 )
@@ -194,7 +218,8 @@ class DownloadService : Service() {
                         )
                     }
                 } catch (_: Exception) {}
-                stopServiceSafe()
+                activeJobs.remove(downloadId)
+                maybeStopService()
             }
         }
     }
@@ -229,7 +254,7 @@ class DownloadService : Service() {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             saveViaMediaStore(tempFile, finalFile.name, mimeType)
         } else {
-            saveViaDirectCopy(tempFile, finalFile, mimeType)
+            saveViaDirectCopy(tempFile, finalFile)
         }
     }
 
@@ -263,18 +288,14 @@ class DownloadService : Service() {
         return uri.toString()
     }
 
-    private fun saveViaDirectCopy(tempFile: File, finalFile: File, mimeType: String): String {
+    private fun saveViaDirectCopy(tempFile: File, finalFile: File): String {
         tempFile.copyTo(finalFile, overwrite = true)
         tempFile.delete()
 
         try {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DATA, finalFile.absolutePath)
-                put(MediaStore.MediaColumns.MIME_TYPE, when {
-                    finalFile.name.endsWith(".mp3", true) -> "audio/mpeg"
-                    finalFile.name.endsWith(".m4a", true) -> "audio/mp4"
-                    else -> "video/mp4"
-                })
+                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
             }
             contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
         } catch (e: Exception) {
@@ -291,9 +312,10 @@ class DownloadService : Service() {
             try {
                 val download = downloadRepository.getDownloadById(downloadId) ?: return@launch
                 downloadRepository.updateDownload(download.copy(status = "PAUSED"))
-                stopServiceSafe()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to pause", e)
+            } finally {
+                maybeStopService()
             }
         }
     }
@@ -304,21 +326,10 @@ class DownloadService : Service() {
         serviceScope.launch {
             try {
                 downloadRepository.deleteDownloadById(downloadId)
-                stopServiceSafe()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to cancel", e)
-            }
-        }
-    }
-
-    private fun stopServiceSafe() {
-        if (isForeground) {
-            try {
-                isForeground = false
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to stop service", e)
+            } finally {
+                maybeStopService()
             }
         }
     }
@@ -374,8 +385,8 @@ class DownloadService : Service() {
                         file
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "FileProvider failed, using file URI", e)
-                    Uri.fromFile(file)
+                    Log.e(TAG, "FileProvider failed, cannot show open notification", e)
+                    return
                 }
             }
         }

@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -46,16 +47,8 @@ class YtdlpEngine(private val context: Context) {
 
     init {
         Thread {
-            try {
-                Log.i(TAG, "Auto-initializing youtubedl-android...")
-                YoutubeDL.getInstance().init(context)
-                initialized = true
-                initError = null
-                Log.i(TAG, "youtubedl-android initialized successfully")
-            } catch (e: Exception) {
-                Log.e(TAG, "Auto-init failed: ${e.message}", e)
-                initError = e.message
-                initialized = false
+            runBlocking {
+                doInit()
             }
         }.apply {
             name = "ytdlp-init"
@@ -64,12 +57,11 @@ class YtdlpEngine(private val context: Context) {
         }
     }
 
-    private suspend fun ensureInit() {
-        if (initialized) return
+    private suspend fun doInit() {
         initMutex.withLock {
             if (initialized) return
             try {
-                Log.i(TAG, "Ensuring youtubedl-android is initialized...")
+                Log.i(TAG, "Initializing youtubedl-android library...")
                 withContext(Dispatchers.IO) {
                     YoutubeDL.getInstance().init(context)
                 }
@@ -82,6 +74,11 @@ class YtdlpEngine(private val context: Context) {
                 initialized = false
             }
         }
+    }
+
+    private suspend fun ensureInit() {
+        if (initialized) return
+        doInit()
     }
 
     suspend fun ensureBinary(): Result<String> = withContext(Dispatchers.IO) {
