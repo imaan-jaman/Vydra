@@ -56,9 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.vydra.app.data.local.entity.DownloadEntity
-import com.vydra.app.ui.components.WavyProgressIndicator
 import com.vydra.app.ui.components.hapticAction
-import com.vydra.app.ui.components.hapticClick
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

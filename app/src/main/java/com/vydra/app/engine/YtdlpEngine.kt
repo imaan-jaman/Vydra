@@ -20,6 +20,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class YtdlpEngine(private val context: Context) {
 
@@ -32,7 +33,7 @@ class YtdlpEngine(private val context: Context) {
     private val updateMutex = Mutex()
     private val initMutex = Mutex()
     private val activeDownloads = ConcurrentHashMap<String, String>()
-    private var processCounter = 0
+    private val processCounter = AtomicInteger(0)
 
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
@@ -212,7 +213,7 @@ class YtdlpEngine(private val context: Context) {
             return@withContext Result.failure(Exception("yt-dlp not installed"))
         }
 
-        val processId = "$PROCESS_ID_PREFIX${System.currentTimeMillis()}_${processCounter++}"
+        val processId = "$PROCESS_ID_PREFIX${System.currentTimeMillis()}_${processCounter.getAndIncrement()}"
         activeDownloads[processId] = url
 
         try {

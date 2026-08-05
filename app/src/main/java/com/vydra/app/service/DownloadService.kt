@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.FileProvider
 import com.vydra.app.R
 import com.vydra.app.VydraApp
 import com.vydra.app.data.local.entity.DownloadEntity
@@ -31,23 +32,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
-import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class DownloadService : Service() {
 
-    @Inject
-    lateinit var ytdlpEngine: YtdlpEngine
-
-    @Inject
-    lateinit var downloadRepository: DownloadRepository
+    @Inject lateinit var ytdlpEngine: YtdlpEngine
+    @Inject lateinit var downloadRepository: DownloadRepository
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _currentDownload = MutableStateFlow<DownloadEntity?>(null)
     private val activeJobs = ConcurrentHashMap<Long, Job>()
+    private val activeTempFiles = ConcurrentHashMap<Long, File>()
     private var lastDbWriteTime = 0L
+    private var isForeground = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -57,6 +56,7 @@ class DownloadService : Service() {
                 val downloadId = intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1)
                 val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
                 startForeground(getNotificationId(downloadId), createPlaceholderNotification())
+                isForeground = true
                 startDownload(downloadId, url)
             }
             ACTION_PAUSE -> {
@@ -84,29 +84,23 @@ class DownloadService : Service() {
         activeJobs[downloadId]?.cancel()
 
         activeJobs[downloadId] = serviceScope.launch {
+            var tempFile: File? = null
             try {
                 if (!ytdlpEngine.isReady) {
-                    val updated = downloadRepository.getDownloadById(downloadId)?.copy(
-                        status = "FAILED",
-                        errorMessage = "yt-dlp is not installed. Please install it from Settings."
-                    )
-                    updated?.let { downloadRepository.updateDownload(it) }
-                    withContext(Dispatchers.Main) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                    downloadRepository.getDownloadById(downloadId)?.let { download ->
+                        downloadRepository.updateDownload(
+                            download.copy(status = "FAILED", errorMessage = "yt-dlp engine not ready")
+                        )
                     }
+                    stopServiceSafe()
                     return@launch
                 }
 
                 val download = downloadRepository.getDownloadById(downloadId) ?: run {
-                    withContext(Dispatchers.Main) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
-                    }
+                    stopServiceSafe()
                     return@launch
                 }
                 _currentDownload.value = download
-
                 downloadRepository.updateDownload(download.copy(status = "DOWNLOADING"))
                 updateNotification(download)
 
@@ -117,89 +111,90 @@ class DownloadService : Service() {
                     .ifEmpty { "download" }
                 val ext = download.format.ifEmpty { "mp4" }
                 val fileName = "$safeName.$ext"
-                val tempFile = File(cacheDir, "dl_${downloadId}_$fileName")
-                val finalFile = File(outputDir, fileName)
+                tempFile = File(cacheDir, "dl_${downloadId}_$fileName")
+                activeTempFiles[downloadId] = tempFile!!
 
+                val finalFile = File(outputDir, fileName)
                 val quality = download.quality
                 val formatArgs = buildFormatArgs(quality, ext)
 
-                Log.i("DownloadService", "Downloading: $url")
-                Log.i("DownloadService", "Format args: $formatArgs")
-                Log.i("DownloadService", "Temp file: ${tempFile.absolutePath}")
-                Log.i("DownloadService", "Final file: ${finalFile.absolutePath}")
+                Log.i(TAG, "Starting download: $url")
+                Log.i(TAG, "Format args: $formatArgs")
+                Log.i(TAG, "Output: ${tempFile!!.absolutePath}")
 
                 ytdlpEngine.download(
                     url = url,
                     formatArgs = formatArgs,
-                    outputPath = tempFile.absolutePath,
+                    outputPath = tempFile!!.absolutePath,
                     onProgress = { progress, _, _ ->
                         val now = System.currentTimeMillis()
                         if (now - lastDbWriteTime > 500) {
                             lastDbWriteTime = now
+                            val percent = (progress * 100f).coerceIn(0f, 100f)
                             serviceScope.launch {
                                 try {
                                     downloadRepository.updateDownload(
-                                        download.copy(progress = progress, status = "DOWNLOADING")
+                                        download.copy(progress = percent, status = "DOWNLOADING")
                                     )
-                                    updateNotification(download.copy(progress = progress))
+                                    updateNotification(download.copy(progress = percent))
                                 } catch (e: Exception) {
-                                    Log.e("DownloadService", "Failed to update progress", e)
+                                    Log.e(TAG, "Failed to update progress", e)
                                 }
                             }
                         }
                     },
-                    onComplete = { tempPath ->
+                    onComplete = { _ ->
                         serviceScope.launch {
                             try {
-                                val savedPath = copyToPublicDownloads(tempFile, finalFile, download.mimeType)
-                                val updated = download.copy(
-                                    filePath = savedPath,
-                                    status = "COMPLETED",
-                                    progress = 100f,
-                                    completedAt = System.currentTimeMillis()
+                                val savedPath = saveToDownloads(tempFile!!, finalFile, download.mimeType)
+                                activeTempFiles.remove(downloadId)
+                                tempFile = null
+                                downloadRepository.updateDownload(
+                                    download.copy(
+                                        filePath = savedPath,
+                                        status = "COMPLETED",
+                                        progress = 100f,
+                                        completedAt = System.currentTimeMillis()
+                                    )
                                 )
-                                downloadRepository.updateDownload(updated)
                                 withContext(Dispatchers.Main) {
+                                    val updated = download.copy(filePath = savedPath, status = "COMPLETED")
                                     showCompletedNotification(updated)
-                                    stopForeground(STOP_FOREGROUND_REMOVE)
-                                    stopSelf()
+                                    stopServiceSafe()
                                 }
                             } catch (e: Exception) {
-                                Log.e("DownloadService", "Failed to complete", e)
+                                Log.e(TAG, "Failed to save download", e)
                                 downloadRepository.updateDownload(
                                     download.copy(status = "FAILED", errorMessage = e.message)
                                 )
-                                withContext(Dispatchers.Main) {
-                                    stopForeground(STOP_FOREGROUND_REMOVE)
-                                    stopSelf()
-                                }
+                                stopServiceSafe()
                             }
                         }
                     },
                     onError = { error ->
                         serviceScope.launch {
-                            try {
-                                downloadRepository.updateDownload(
-                                    download.copy(status = "FAILED", errorMessage = error.message)
-                                )
-                                withContext(Dispatchers.Main) {
-                                    stopForeground(STOP_FOREGROUND_REMOVE)
-                                    stopSelf()
-                                }
-                            } catch (e: Exception) {
-                                Log.e("DownloadService", "Failed to handle error", e)
-                            }
+                            activeTempFiles.remove(downloadId)
+                            tempFile?.delete()
+                            tempFile = null
+                            downloadRepository.updateDownload(
+                                download.copy(status = "FAILED", errorMessage = error.message)
+                            )
+                            stopServiceSafe()
                         }
                     }
                 )
             } catch (e: Exception) {
-                Log.e("DownloadService", "Download failed unexpectedly", e)
+                Log.e(TAG, "Download failed unexpectedly", e)
+                activeTempFiles.remove(downloadId)
+                tempFile?.delete()
                 try {
-                    withContext(Dispatchers.Main) {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
+                    downloadRepository.getDownloadById(downloadId)?.let { download ->
+                        downloadRepository.updateDownload(
+                            download.copy(status = "FAILED", errorMessage = e.message)
+                        )
                     }
                 } catch (_: Exception) {}
+                stopServiceSafe()
             }
         }
     }
@@ -207,9 +202,9 @@ class DownloadService : Service() {
     private fun buildFormatArgs(quality: String, ext: String): List<String> {
         return when {
             quality.contains("mp3", ignoreCase = true) ->
-                listOf("-f", "bestaudio[ext=m4a]/bestaudio", "--audio-format", "mp3")
+                listOf("-x", "--audio-format", "mp3", "--audio-quality", "192K")
             quality.contains("m4a", ignoreCase = true) ->
-                listOf("-f", "bestaudio[ext=m4a]/bestaudio")
+                listOf("-x", "--audio-format", "m4a", "--audio-quality", "192K")
             quality.contains("4k", ignoreCase = true) ||
             quality.contains("2160", ignoreCase = true) ->
                 listOf("-f", "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best")
@@ -226,75 +221,104 @@ class DownloadService : Service() {
         }
     }
 
-    private fun copyToPublicDownloads(tempFile: File, finalFile: File, mimeType: String): String {
+    private fun saveToDownloads(tempFile: File, finalFile: File, mimeType: String): String {
+        if (!tempFile.exists() || tempFile.length() == 0L) {
+            throw Exception("Downloaded file is empty or missing")
+        }
+
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            copyWithMediaStore(tempFile, finalFile, mimeType)
+            saveViaMediaStore(tempFile, finalFile.name, mimeType)
         } else {
-            copyWithFile(tempFile, finalFile)
+            saveViaDirectCopy(tempFile, finalFile, mimeType)
         }
     }
 
-    private fun copyWithMediaStore(tempFile: File, finalFile: File, mimeType: String): String {
+    private fun saveViaMediaStore(tempFile: File, fileName: String, mimeType: String): String {
+        val resolvedMimeType = when {
+            mimeType.isNotEmpty() && mimeType != "video/mp4" -> mimeType
+            fileName.endsWith(".mp3", true) -> "audio/mpeg"
+            fileName.endsWith(".m4a", true) -> "audio/mp4"
+            fileName.endsWith(".webm", true) -> "video/webm"
+            fileName.endsWith(".mkv", true) -> "video/x-matroska"
+            else -> "video/mp4"
+        }
+
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, finalFile.name)
-            put(MediaStore.Downloads.MIME_TYPE, mimeType.ifEmpty { "video/mp4" })
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, resolvedMimeType)
             put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/Vydra")
         }
 
         val resolver = contentResolver
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: return copyWithFile(tempFile, finalFile)
+            ?: throw Exception("Failed to create MediaStore entry")
 
         resolver.openOutputStream(uri)?.use { outputStream ->
             FileInputStream(tempFile).use { inputStream ->
-                inputStream.copyTo(outputStream)
+                inputStream.copyTo(outputStream, bufferSize = 8192)
             }
-        }
+        } ?: throw Exception("Failed to open output stream for MediaStore")
 
         tempFile.delete()
         return uri.toString()
     }
 
-    private fun copyWithFile(tempFile: File, finalFile: File): String {
+    private fun saveViaDirectCopy(tempFile: File, finalFile: File, mimeType: String): String {
         tempFile.copyTo(finalFile, overwrite = true)
         tempFile.delete()
 
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DATA, finalFile.absolutePath)
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DATA, finalFile.absolutePath)
+                put(MediaStore.MediaColumns.MIME_TYPE, when {
+                    finalFile.name.endsWith(".mp3", true) -> "audio/mpeg"
+                    finalFile.name.endsWith(".m4a", true) -> "audio/mp4"
+                    else -> "video/mp4"
+                })
+            }
+            contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
+        } catch (e: Exception) {
+            Log.w(TAG, "MediaStore insert failed for pre-Q", e)
         }
-        contentResolver.insert(MediaStore.Files.getContentUri("external"), values)
 
         return finalFile.absolutePath
     }
 
     private fun pauseDownload(downloadId: Long) {
         activeJobs.remove(downloadId)?.cancel()
+        activeTempFiles.remove(downloadId)?.delete()
         serviceScope.launch {
             try {
                 val download = downloadRepository.getDownloadById(downloadId) ?: return@launch
                 downloadRepository.updateDownload(download.copy(status = "PAUSED"))
-                withContext(Dispatchers.Main) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
+                stopServiceSafe()
             } catch (e: Exception) {
-                Log.e("DownloadService", "Failed to pause", e)
+                Log.e(TAG, "Failed to pause", e)
             }
         }
     }
 
     private fun cancelDownload(downloadId: Long) {
         activeJobs.remove(downloadId)?.cancel()
+        activeTempFiles.remove(downloadId)?.delete()
         serviceScope.launch {
             try {
                 downloadRepository.deleteDownloadById(downloadId)
-                withContext(Dispatchers.Main) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
+                stopServiceSafe()
             } catch (e: Exception) {
-                Log.e("DownloadService", "Failed to cancel", e)
+                Log.e(TAG, "Failed to cancel", e)
+            }
+        }
+    }
+
+    private fun stopServiceSafe() {
+        if (isForeground) {
+            try {
+                isForeground = false
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to stop service", e)
             }
         }
     }
@@ -314,18 +338,18 @@ class DownloadService : Service() {
 
     private fun updateNotification(download: DownloadEntity) {
         val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
+            this, 0,
             Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val progressPercent = download.progress.toInt().coerceIn(0, 100)
         val notification = NotificationCompat.Builder(this, VydraApp.DOWNLOAD_CHANNEL_ID)
             .setContentTitle(download.title)
-            .setContentText("${download.progress.toInt()}%")
-            .setProgress(100, download.progress.toInt(), false)
+            .setContentText("$progressPercent%")
+            .setProgress(100, progressPercent, false)
             .setSmallIcon(R.drawable.ic_download)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -337,21 +361,23 @@ class DownloadService : Service() {
     }
 
     private fun showCompletedNotification(download: DownloadEntity) {
-        if (download.filePath.isBlank()) return
-
-        val fileUri = if (download.filePath.startsWith("content://")) {
-            Uri.parse(download.filePath)
-        } else {
-            val file = File(download.filePath)
-            if (!file.exists()) return
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(
-                    Uri.fromFile(file),
-                    download.mimeType.ifEmpty { "video/*" }
-                )
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val fileUri = when {
+            download.filePath.isBlank() -> return
+            download.filePath.startsWith("content://") -> Uri.parse(download.filePath)
+            else -> {
+                val file = File(download.filePath)
+                if (!file.exists()) return
+                try {
+                    FileProvider.getUriForFile(
+                        this,
+                        "${packageName}.fileprovider",
+                        file
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "FileProvider failed, using file URI", e)
+                    Uri.fromFile(file)
+                }
             }
-            return
         }
 
         val fileIntent = Intent(Intent.ACTION_VIEW).apply {
@@ -360,9 +386,7 @@ class DownloadService : Service() {
         }
 
         val pendingIntent = PendingIntent.getActivity(
-            this,
-            download.id.toInt(),
-            fileIntent,
+            this, download.id.toInt(), fileIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -382,10 +406,13 @@ class DownloadService : Service() {
         super.onDestroy()
         activeJobs.values.forEach { it.cancel() }
         activeJobs.clear()
+        activeTempFiles.values.forEach { it.delete() }
+        activeTempFiles.clear()
         serviceScope.cancel()
     }
 
     companion object {
+        private const val TAG = "DownloadService"
         const val ACTION_START = "com.vydra.app.DOWNLOAD_START"
         const val ACTION_PAUSE = "com.vydra.app.DOWNLOAD_PAUSE"
         const val ACTION_CANCEL = "com.vydra.app.DOWNLOAD_CANCEL"

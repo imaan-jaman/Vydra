@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <external-files-path
-        name="downloads"
+    <external-path
+        name="external_downloads"
+        path="Download/" />
+    <external-path
+        name="downloads_root"
         path="." />
     <files-path
         name="internal"
