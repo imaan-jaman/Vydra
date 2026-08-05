@@ -30,39 +30,61 @@ class YtdlpEngine(private val context: Context) {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val updateMutex = Mutex()
+    private val initMutex = Mutex()
     private val activeDownloads = ConcurrentHashMap<String, String>()
     private var processCounter = 0
 
     private val _updateState = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val updateState: StateFlow<UpdateState> = _updateState.asStateFlow()
 
+    @Volatile
     private var initialized = false
     private var initError: String? = null
 
     val isReady: Boolean get() = initialized && initError == null
 
-    fun initLibrary() {
-        if (initialized) return
-        try {
-            Log.i(TAG, "Initializing youtubedl-android library...")
-            YoutubeDL.getInstance().init(context)
-            initialized = true
-            initError = null
-            Log.i(TAG, "youtubedl-android initialized successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize youtubedl-android", e)
-            initError = e.message
-            initialized = false
+    init {
+        Thread {
+            try {
+                Log.i(TAG, "Auto-initializing youtubedl-android...")
+                YoutubeDL.getInstance().init(context)
+                initialized = true
+                initError = null
+                Log.i(TAG, "youtubedl-android initialized successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Auto-init failed: ${e.message}", e)
+                initError = e.message
+                initialized = false
+            }
+        }.apply {
+            name = "ytdlp-init"
+            priority = Thread.NORM_PRIORITY - 1
+            start()
         }
     }
 
-    fun ensureBinaryReady(): Boolean {
-        if (!initialized) initLibrary()
-        return isReady
+    private suspend fun ensureInit() {
+        if (initialized) return
+        initMutex.withLock {
+            if (initialized) return
+            try {
+                Log.i(TAG, "Ensuring youtubedl-android is initialized...")
+                withContext(Dispatchers.IO) {
+                    YoutubeDL.getInstance().init(context)
+                }
+                initialized = true
+                initError = null
+                Log.i(TAG, "youtubedl-android initialized successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Init failed: ${e.message}", e)
+                initError = e.message
+                initialized = false
+            }
+        }
     }
 
     suspend fun ensureBinary(): Result<String> = withContext(Dispatchers.IO) {
-        if (!initialized) initLibrary()
+        ensureInit()
         if (!isReady) {
             return@withContext Result.failure(
                 Exception("yt-dlp engine failed to initialize: $initError")
@@ -74,6 +96,7 @@ class YtdlpEngine(private val context: Context) {
     suspend fun updateBinary(): Result<String> = withContext(Dispatchers.IO) {
         updateMutex.withLock {
             try {
+                ensureInit()
                 _updateState.value = UpdateState.Downloading(0)
                 Log.i(TAG, "Updating yt-dlp via library...")
 
@@ -93,7 +116,7 @@ class YtdlpEngine(private val context: Context) {
 
     suspend fun getVersion(): String = withContext(Dispatchers.IO) {
         try {
-            if (!initialized) initLibrary()
+            ensureInit()
             if (!isReady) return@withContext "Not installed"
             YoutubeDL.version(context) ?: "Unknown"
         } catch (e: Exception) {
@@ -103,9 +126,10 @@ class YtdlpEngine(private val context: Context) {
     }
 
     suspend fun getMediaInfo(url: String): Result<MediaInfo> = withContext(Dispatchers.IO) {
+        ensureInit()
         if (!isReady) {
             return@withContext Result.failure(
-                Exception("yt-dlp not available. Please install it from Settings or Home screen.")
+                Exception("yt-dlp not available: $initError")
             )
         }
 
@@ -183,6 +207,7 @@ class YtdlpEngine(private val context: Context) {
         onComplete: (String) -> Unit = {},
         onError: (Exception) -> Unit = {}
     ): Result<String> = withContext(Dispatchers.IO) {
+        ensureInit()
         if (!isReady) {
             return@withContext Result.failure(Exception("yt-dlp not installed"))
         }

@@ -48,3 +48,4 @@
 
 # Apache Commons IO (used by youtubedl-android)
 -dontwarn org.apache.commons.io.**
+-keep class org.apache.commons.io.** { *; }

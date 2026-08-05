@@ -119,11 +119,7 @@ fun HomeScreen(
 
             if (!uiState.binaryReady) {
                 item {
-                    SetupBanner(
-                        isInstalling = uiState.isInstalling,
-                        progress = uiState.installProgress,
-                        onInstall = viewModel::installBinary
-                    )
+                    InitBanner()
                 }
             }
 
@@ -249,11 +245,7 @@ fun PasteLinkCard(
 }
 
 @Composable
-fun SetupBanner(
-    isInstalling: Boolean,
-    progress: Int,
-    onInstall: () -> Unit
-) {
+fun InitBanner() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -262,55 +254,27 @@ fun SetupBanner(
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.padding(24.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.SystemUpdate,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
+        Row(
+            modifier = Modifier.padding(24.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.5.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
                 Text(
-                    text = "Setup Required",
+                    text = "Setting up yt-dlp...",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "yt-dlp needs to be installed before you can download videos. This is a one-time setup.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            if (isInstalling) {
-                WavyProgressIndicator(
-                    progress = progress.toFloat(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(8.dp),
-                    heightDp = 8
-                )
-                Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Installing... $progress%",
+                    text = "First launch only. Ready in a moment.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                 )
-            } else {
-                Button(
-                    onClick = hapticAction(onInstall),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Icon(Icons.Default.SystemUpdate, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Install yt-dlp", fontWeight = FontWeight.Bold)
-                }
             }
         }
     }

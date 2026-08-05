@@ -3,11 +3,8 @@ package com.vydra.app
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.os.Build
-import android.util.Log
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
-import com.yausername.youtubedl_android.YoutubeDL
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -25,16 +22,6 @@ class VydraApp : Application(), Configuration.Provider {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
-        initYoutubedl()
-    }
-
-    private fun initYoutubedl() {
-        try {
-            YoutubeDL.getInstance().init(this)
-            Log.i("VydraApp", "YoutubeDL initialized")
-        } catch (e: Exception) {
-            Log.e("VydraApp", "YoutubeDL init failed", e)
-        }
     }
 
     private fun createNotificationChannels() {

@@ -26,9 +26,7 @@ data class HomeUiState(
     val mediaInfo: MediaInfo? = null,
     val error: String? = null,
     val showBottomSheet: Boolean = false,
-    val binaryReady: Boolean = false,
-    val isInstalling: Boolean = false,
-    val installProgress: Int = 0
+    val binaryReady: Boolean = false
 )
 
 @HiltViewModel
@@ -48,8 +46,15 @@ class HomeViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            val ready = withContext(Dispatchers.IO) { ytdlpEngine.isReady }
-            _uiState.value = _uiState.value.copy(binaryReady = ready)
+            withContext(Dispatchers.IO) {
+                ytdlpEngine.ensureBinary()
+            }.onSuccess {
+                _uiState.value = _uiState.value.copy(binaryReady = true)
+            }.onFailure { e ->
+                _uiState.value = _uiState.value.copy(
+                    error = "Engine init failed: ${e.message}"
+                )
+            }
         }
         observeUpdateState()
     }
@@ -58,38 +63,14 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             ytdlpEngine.updateState.collect { state ->
                 when (state) {
-                    is UpdateState.Downloading -> {
-                        _uiState.value = _uiState.value.copy(
-                            isInstalling = true,
-                            installProgress = state.progress
-                        )
-                    }
                     is UpdateState.Success -> {
-                        _uiState.value = _uiState.value.copy(
-                            binaryReady = true,
-                            isInstalling = false
-                        )
+                        _uiState.value = _uiState.value.copy(binaryReady = true)
                     }
                     is UpdateState.Error -> {
-                        _uiState.value = _uiState.value.copy(
-                            isInstalling = false,
-                            error = state.message
-                        )
+                        _uiState.value = _uiState.value.copy(error = state.message)
                     }
-                    is UpdateState.Idle -> {}
+                    else -> {}
                 }
-            }
-        }
-    }
-
-    fun installBinary() {
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isInstalling = true)
-            ytdlpEngine.updateBinary().onFailure { e ->
-                _uiState.value = _uiState.value.copy(
-                    isInstalling = false,
-                    error = e.message ?: "Install failed"
-                )
             }
         }
     }
@@ -106,12 +87,11 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            val ready = withContext(Dispatchers.IO) { ytdlpEngine.isReady }
-            if (!ready) {
-                _uiState.value = _uiState.value.copy(error = "Installing yt-dlp... Please wait a moment and try again.")
-                installBinary()
-                return@launch
-            }
+            withContext(Dispatchers.IO) { ytdlpEngine.ensureBinary() }
+                .onFailure { e ->
+                    _uiState.value = _uiState.value.copy(error = e.message ?: "Engine not ready")
+                    return@launch
+                }
 
             _uiState.value = _uiState.value.copy(isLoading = true, error = null)
             analyzeUrlUseCase(url)
