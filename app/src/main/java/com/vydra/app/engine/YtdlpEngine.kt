@@ -47,8 +47,14 @@ class YtdlpEngine(private val context: Context) {
 
     init {
         Thread {
-            runBlocking {
-                doInit()
+            try {
+                runBlocking {
+                    doInit()
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Init thread crashed: ${e.message}", e)
+                initError = e.message ?: e.toString()
+                initialized = false
             }
         }.apply {
             name = "ytdlp-init"
@@ -68,9 +74,9 @@ class YtdlpEngine(private val context: Context) {
                 initialized = true
                 initError = null
                 Log.i(TAG, "youtubedl-android initialized successfully")
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Init failed: ${e.message}", e)
-                initError = e.message
+                initError = e.message ?: e.toString()
                 initialized = false
             }
         }
